@@ -6,3 +6,4 @@ tokens
 __pycache__/
 *.pyc
 *.pyo
+.venv
