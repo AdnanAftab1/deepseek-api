@@ -4,7 +4,7 @@
 '''
 DeepSeek API Server - OpenAI-compatible server for DeepSeek.Programed to respond in only JSON.
 '''
-
+from dotenv import load_dotenv
 import os
 import json
 import time
@@ -14,19 +14,17 @@ from flask import Flask, request, jsonify, Response, stream_with_context
 from DeepSeekAPI import DeepSeekChat
 
 app = Flask(__name__)
+load_dotenv()
 
 # Load tokens from file or environment
 def get_tokens():
-    if os.path.exists("tokens"):
-        with open("tokens") as f:
-            lines = f.read().strip().split('\n')
-            if len(lines) >= 2:
-                return lines[0], lines[1]
+    
     ds_session_id = os.environ.get("DS_SESSION_ID")
     authorization_token = os.environ.get("AUTHORIZATION_TOKEN")
+
     if ds_session_id and authorization_token:
         return ds_session_id, authorization_token
-    raise ValueError("Tokens not found. Set DS_SESSION_ID and AUTHORIZATION_TOKEN or create 'tokens' file.")
+    raise ValueError("Tokens not found. Set DS_SESSION_ID and AUTHORIZATION_TOKEN ")
 
 DS_SESSION_ID, AUTHORIZATION_TOKEN = get_tokens()
 
@@ -140,7 +138,8 @@ def chat_completions():
         )
     else:
         result = chat_non_streaming(messages, model_type, thinking_enabled)
-        
+
+        print("Response:",result,"\n\n\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\n")
         return jsonify({
             "id": f"chatcmpl-{int(time.time())}",
             "object": "chat.completion",
@@ -150,7 +149,7 @@ def chat_completions():
                 "index": 0,
                 "message": {
                     "role": "assistant",
-                    "content": (result[-1]+result) 
+                    "content": (('{' if result[-1] == '}' else '[') + result)
                 },
                 "finish_reason": "stop"
             }],

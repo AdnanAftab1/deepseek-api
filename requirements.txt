@@ -6,3 +6,6 @@ term-image
 wcwidth
 toml
 flask
+Flask
+gunicorn
+python-dotenv

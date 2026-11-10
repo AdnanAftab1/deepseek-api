@@ -1,0 +1,29 @@
+# Secrets — NEVER bake into the image
+.env
+
+# Python
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+
+# VCS
+.git
+.gitignore
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode
+.idea
+
+# Docker
+Dockerfile
+.dockerignore
+
+# Logs / temp
+*.log
+tmp
