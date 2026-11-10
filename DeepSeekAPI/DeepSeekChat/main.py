@@ -13,8 +13,6 @@ Debug-friendly rewrite:
 License: AGPL-3.0-or-later
 """
 
-import utils.transport
-import utils.session
 import json
 import os
 import time

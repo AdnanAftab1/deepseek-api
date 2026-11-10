@@ -6,23 +6,25 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Set the working directory inside the container (FIXED: Changed from / to /app)
+# Set the working directory inside the container
 WORKDIR /app
 
-# Copy only the requirements file first to leverage Docker layer caching
-# If requirements don't change, this layer will be cached
-COPY requirements.txt .
+# 1. Create the virtual environment
+RUN python -m venv /opt/venv
 
-# Install dependencies
+# 2. Tell Docker to use the venv's Python and pip by default
+ENV PATH="/opt/venv/bin:$PATH"
+
+# 3. Copy requirements and install into the venv
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of your application code
-# This includes server.py, DeepSeekAPI.py, and your .env file
 COPY . .
 
 # Expose the port your Flask app will run on
 EXPOSE 8000
 
 # Command to run the application using Gunicorn
-# FIXED: Changed 'your_server_file_name:app' to 'server:app'
+# Because we updated the PATH, gunicorn is now found inside /opt/venv/bin/
 CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:8000", "--timeout", "120", "server:app"]
