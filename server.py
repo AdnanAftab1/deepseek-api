@@ -3,6 +3,7 @@
 
 '''
 DeepSeek API Server - OpenAI-compatible server for DeepSeek.Programed to respond in only JSON.
+DeepSeek API Server - OpenAI-compatible server for DeepSeek.Programed to respond in only JSON.
 '''
 from dotenv import load_dotenv
 import os
@@ -149,7 +150,7 @@ def chat_completions():
                 "index": 0,
                 "message": {
                     "role": "assistant",
-                    "content": (('{' if result[-1] == '}' else '[') + result)
+                    "content": result
                 },
                 "finish_reason": "stop"
             }],
