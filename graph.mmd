@@ -1,0 +1,26 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	plan(plan)
+	wait(wait)
+	execute(execute)
+	done(done)
+	give_up(give_up)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> plan;
+	execute -.-> done;
+	execute -.-> give_up;
+	execute -.-> plan;
+	plan -.-> execute;
+	plan -.-> give_up;
+	plan -.-> wait;
+	wait --> plan;
+	done --> __end__;
+	give_up --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

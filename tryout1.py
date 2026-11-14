@@ -67,22 +67,42 @@ def list_dir(path: str = ".") -> dict:
     return {"status": "ok", "path": path, "entries": entries}
 
 
-def read_file(path: str, max_bytes: int = 20_000) -> dict:
+def read_file(path: str, max_bytes: int = 20_000, offset: int = 0, limit: int | None = None) -> dict:
     full = _safe_path(path)
     if not os.path.isfile(full):
         return {"status": "error", "message": f"Not a file: {path}"}
     with open(full, "rb") as f:
-        data = f.read(max_bytes)
+        data = f.read()
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         return {"status": "error", "message": "Binary file; not readable as UTF-8"}
+
+    total_bytes = len(data)
+    total_lines = text.count("\n") + (0 if text.endswith("\n") or text == "" else 1)
+
+    # Apply line window (offset/limit) first so read_file can slice by lines.
+    lines = text.splitlines(keepends=True)
+    start = max(0, offset)
+    end = len(lines) if limit is None else max(start, start + limit)
+    window = "".join(lines[start:end])
+
+    # Then enforce the byte cap on the returned content.
+    enc = window.encode("utf-8")
+    byte_truncated = False
+    if len(enc) > max_bytes:
+        window = enc[:max_bytes].decode("utf-8", errors="ignore")
+        byte_truncated = True
+
     return {
         "status": "ok",
         "path": path,
-        "bytes_read": len(data),
-        "truncated": os.path.getsize(full) > len(data),
-        "content": text,
+        "bytes_read": len(window.encode("utf-8")),
+        "total_bytes": total_bytes,
+        "total_lines": total_lines,
+        "offset": start,
+        "truncated": byte_truncated or end < len(lines),
+        "content": window,
     }
 
 
@@ -104,6 +124,58 @@ def write_file(path: str, content: str) -> dict:
         "path": path,
         "bytes_written": len(content.encode("utf-8")),
     }
+
+
+def edit_file(path: str, old: str, new: str, count: int = 1) -> dict:
+    """Replace `old` with `new` inside `path`, touching only the matched region.
+
+    This is the token-saving path: the model only sends the snippet it wants
+    changed, not the whole file. `old` must match verbatim (including
+    whitespace). `count` = max replacements (0 = replace all occurrences).
+    """
+    full = _safe_path(path)
+    if not os.path.isfile(full):
+        return {"status": "error", "message": f"Not a file: {path}"}
+    with open(full, "r", encoding="utf-8", newline="") as f:
+        original = f.read()
+
+    if old == "":
+        return {"status": "error", "message": "`old` must be non-empty"}
+
+    occurrences = original.count(old)
+    if occurrences == 0:
+        return {
+            "status": "error",
+            "message": "`old` snippet not found verbatim in file",
+            "path": path,
+        }
+
+    limit = occurrences if count == 0 else count
+    updated = original.replace(old, new, limit)
+    replaced = min(limit, occurrences)
+
+    # Preserve original newline style for the replacement area by writing back
+    # the whole string as-is; unaffected regions are byte-identical.
+    with open(full, "w", encoding="utf-8", newline="") as f:
+        f.write(updated)
+
+    return {
+        "status": "ok",
+        "path": path,
+        "replaced": replaced,
+        "occurrences": occurrences,
+        "bytes_written": len(updated.encode("utf-8")),
+    }
+
+
+def append_file(path: str, content: str) -> dict:
+    full = _safe_path(path)
+    parent = os.path.dirname(full)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(full, "a", encoding="utf-8") as f:
+        f.write(content)
+    return {"status": "ok", "path": path, "bytes_appended": len(content.encode("utf-8"))}
 
 
 def zip_folder(src_dir: str, zip_path: str) -> dict:
@@ -132,6 +204,8 @@ TOOL_EXECUTORS = {
     "read_file":     read_file,
     "create_folder": create_folder,
     "write_file":    write_file,
+    "edit_file":     edit_file,
+    "append_file":   append_file,
     "zip_folder":    zip_folder,
     "finish_task":   finish_task,
 }
@@ -146,23 +220,36 @@ Available tools:
    Lists a directory. Use this FIRST to discover the folder layout.
 
 2. read_file
-   args: { "path": "<string>", "max_bytes"?: <int> }
-   Reads a UTF-8 text file. Use before writing/deciding anything that depends
-   on existing content.
+   args: { "path": "<string>", "offset"?: <int>, "limit"?: <int>, "max_bytes"?: <int> }
+   Reads a UTF-8 text file. `offset`/`limit` select a line window (0-based);
+   `max_bytes` caps the returned content. Prefer this over reading the whole
+   file when you only need a small region. Reads before writing/deciding.
 
 3. create_folder
    args: { "path": "<string>" }
    Creates a folder (and any parent folders).
 
-4. write_file
-   args: { "path": "<string>", "content": "<string>" }
-   Writes UTF-8 text to a file (creates parent folder if needed).
+4. edit_file   <-- PREFERRED for small changes (token-saving)
+   args: { "path": "<string>", "old": "<string>", "new": "<string>", "count"?: <int> }
+   Replaces a snippet. `old` must match verbatim (whitespace included).
+   `count` = max replacements (default 1; 0 = replace all). Only the matched
+   region is rewritten — you do NOT resend the whole file. Use this to make
+   targeted edits instead of rewriting entire files with write_file.
 
-5. zip_folder
+5. write_file
+   args: { "path": "<string>", "content": "<string>" }
+   Writes the FULL contents of a UTF-8 file (creates parent folder if needed).
+   Use only for new files or full rewrites; prefer edit_file for small changes.
+
+6. append_file
+   args: { "path": "<string>", "content": "<string>" }
+   Appends UTF-8 text to the end of a file (creates it if needed).
+
+7. zip_folder
    args: { "src_dir": "<string>", "zip_path": "<string>" }
    Recursively zips everything under src_dir into a single .zip file.
 
-6. finish_task
+8. finish_task
    args: { "summary"?: "<string>" }
    Call this WHEN AND ONLY WHEN the user's request has been fully satisfied.
    This is the ONLY way to end the task. Never emit an empty array [] as a
@@ -171,6 +258,9 @@ Available tools:
 RULES
 - All paths are relative to the working directory and may not escape it.
 - Prefer discovering state (list_dir / read_file) before mutating.
+- To save output tokens, make targeted edits with edit_file instead of
+  rewriting whole files. Keep `old`/`new` snippets as small as possible while
+  still being unique in the file.
 - Reply with ONLY a JSON array of { "tool": ..., "args": { ... } }.
 - Do NOT reply with [] to finish. You MUST call finish_task to finish.
 - finish_task must be the LAST call in the array; do not batch it with other
