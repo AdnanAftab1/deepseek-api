@@ -7,12 +7,13 @@ import time
 import zipfile
 from typing import Any, TypedDict
 
+from yachalk import chalk
 from openai import OpenAI
 from langgraph.graph import StateGraph, START, END
 
 # ------------------------------------------------------------------ client
 client = OpenAI(
-    base_url="http://127.0.0.1:8000/v1",
+    base_url="https://xqxmedozyom24kmy522qsbacqu0qtiaq.lambda-url.ap-south-1.on.aws/v1",
     api_key="sk-dummy-key",
 )
 
@@ -20,6 +21,29 @@ MAX_ATTEMPTS        = 5
 RETRY_DELAY_SECONDS = 1.0
 MAX_TURNS           = 25
 WORKDIR             = os.path.abspath(os.getcwd())
+
+# Default per-read byte cap; can be overridden per call via max_bytes
+DEFAULT_READ_BYTES  = 20_000
+
+
+# ------------------------------------------------------------------ style helpers
+def _status(res: dict) -> str:
+    st = res.get("status", "?")
+    return {
+        "ok":    chalk.green("ok"),
+        "error": chalk.red("error"),
+    }.get(st, chalk.yellow(st))
+
+
+def _tool(name: str | None) -> str:
+    return chalk.cyan.bold(name or "?")
+
+
+def _dim_json(obj: Any, limit: int = 160) -> str:
+    txt = json.dumps(obj, default=str)
+    if len(txt) > limit:
+        txt = txt[:limit] + "…"
+    return chalk.gray(txt)
 
 
 # ------------------------------------------------------------------ safety
@@ -46,21 +70,120 @@ def list_dir(path: str = ".") -> dict:
     return {"status": "ok", "path": path, "entries": entries}
 
 
-def read_file(path: str, max_bytes: int = 20_000) -> dict:
+def read_file(
+    path: str,
+    max_bytes: int = DEFAULT_READ_BYTES,
+    start: int = 0,
+    start_line: int | None = None,
+    end_line: int | None = None,
+    offset: int = 0,
+) -> dict:
+    """Read a selected portion of a UTF-8 text file to save token output.
+
+    Args:
+        path:        relative file path.
+        max_bytes:   hard cap on the number of bytes read for this slice.
+        start:       byte offset to begin reading from (default 0).
+        start_line:  1-based first line to include (inclusive). If given,
+                     overrides ``start`` (byte offset).
+        end_line:    1-based last line to include (inclusive). If given
+                     together with ``start_line``, restricts the slice to
+                     that line range.
+        offset:      number of lines to skip before starting (alternative
+                     0-based line offset when start_line isn't used).
+
+    Returns a dict with:
+        status, path, bytes_read, start_byte, end_byte, total_bytes,
+        truncated (True if bytes remain after this slice),
+        start_line, end_line (actual 1-based line numbers of the slice),
+        total_lines (if computed), content, next_start (byte offset to
+        continue reading, or None if EOF).
+    """
     full = _safe_path(path)
     if not os.path.isfile(full):
         return {"status": "error", "message": f"Not a file: {path}"}
+
+    total_bytes = os.path.getsize(full)
+
+    # --- line-based selection -------------------------------------------
+    if start_line is not None or end_line is not None or offset:
+        try:
+            with open(full, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except UnicodeDecodeError:
+            return {"status": "error",
+                    "message": "Binary file; not readable as UTF-8"}
+        total_lines = len(lines)
+
+        first = (start_line - 1) if start_line is not None else offset
+        if first < 0:
+            first = 0
+        last = end_line if end_line is not None else total_lines
+        if last > total_lines:
+            last = total_lines
+        if last < first:
+            last = first
+
+        selected = lines[first:last]
+        text = "".join(selected)
+        raw = text.encode("utf-8")
+
+        # Enforce byte cap
+        truncated = False
+        if len(raw) > max_bytes:
+            raw = raw[:max_bytes]
+            # avoid cutting a multibyte char
+            text = raw.decode("utf-8", errors="ignore")
+            truncated = True
+
+        bytes_read = len(text.encode("utf-8"))
+        return {
+            "status": "ok",
+            "path": path,
+            "bytes_read": bytes_read,
+            "total_bytes": total_bytes,
+            "start_byte": 0,
+            "end_byte": bytes_read,
+            "start_line": first + 1 if total_lines else 0,
+            "end_line": first + text.count("\n") + (0 if text.endswith("\n") else 1),
+            "total_lines": total_lines,
+            "truncated": truncated or (last < total_lines),
+            "next_start": None if (last >= total_lines and not truncated) else None,
+            "content": text,
+        }
+
+    # --- byte-based selection -------------------------------------------
+    if start < 0:
+        start = 0
+    if start > total_bytes:
+        start = total_bytes
+
     with open(full, "rb") as f:
+        f.seek(start)
         data = f.read(max_bytes)
+
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
-        return {"status": "error", "message": "Binary file; not readable as UTF-8"}
+        # trim trailing partial multibyte char
+        text = data.decode("utf-8", errors="ignore")
+
+    bytes_read = len(data)
+    end_byte = start + bytes_read
+    more = end_byte < total_bytes
+
     return {
         "status": "ok",
         "path": path,
-        "bytes_read": len(data),
-        "truncated": os.path.getsize(full) > len(data),
+        "bytes_read": bytes_read,
+        "total_bytes": total_bytes,
+        "start_byte": start,
+        "end_byte": end_byte,
+        "total_lines": None,
+        "start_line": None,
+        "end_line": None,
+        "truncated": more,
+        "next_start": end_byte if more else None,
         "content": text,
     }
 
@@ -125,9 +248,18 @@ Available tools:
    Lists a directory. Use this FIRST to discover the folder layout.
 
 2. read_file
-   args: { "path": "<string>", "max_bytes"?: <int> }
-   Reads a UTF-8 text file. Use before writing/deciding anything that depends
-   on existing content.
+   args: {
+     "path":       "<string>",
+     "max_bytes"?: <int>,     # cap on bytes returned for this slice (default 20000)
+     "start"?:     <int>,     # byte offset to start from (default 0)
+     "start_line"?: <int>,    # 1-based first line (inclusive); overrides start
+     "end_line"?:   <int>,    # 1-based last line (inclusive); used with start_line
+     "offset"?:    <int>      # 0-based number of lines to skip (alt. to start_line)
+   }
+   Reads a SELECTED PORTION of a UTF-8 text file to save token output.
+   Prefer using start_line/end_line (or offset) when you only need part of
+   a file. Response includes total_bytes, truncated, next_start and
+   (for line-based reads) total_lines so you can page through large files.
 
 3. create_folder
    args: { "path": "<string>" }
@@ -150,6 +282,8 @@ Available tools:
 RULES
 - All paths are relative to the working directory and may not escape it.
 - Prefer discovering state (list_dir / read_file) before mutating.
+- To save tokens, read only the portion of a file you actually need
+  (use start_line/end_line or max_bytes), rather than whole large files.
 - Reply with ONLY a JSON array of { "tool": ..., "args": { ... } }.
 - Do NOT reply with [] to finish. You MUST call finish_task to finish.
 - finish_task must be the LAST call in the array; do not batch it with other
@@ -225,7 +359,6 @@ def _looks_degenerate(text: str | None) -> bool:
 def _parse_calls(raw: str) -> list[dict]:
     clean = _strip_fences(raw)
     data = json.loads(clean)
-    print(data)
     if isinstance(data, dict) and "calls" in data:
         data = data["calls"]
     if not isinstance(data, list):
@@ -245,7 +378,15 @@ def _parse_calls(raw: str) -> list[dict]:
 def plan_node(state: AgentState) -> AgentState:
     attempts = state.get("attempts", 0) + 1
     turns    = state.get("turns", 0) + 1
-    print(f"\n[plan] turn {turns}, attempt {attempts}/{MAX_ATTEMPTS}")
+
+    header = (
+        chalk.bg_blue.white.bold(" plan ")
+        + " "
+        + chalk.blue(f"turn {turns}/{MAX_TURNS}")
+        + chalk.gray(" · ")
+        + chalk.yellow(f"attempt {attempts}/{MAX_ATTEMPTS}")
+    )
+    print("\n" + header)
 
     user_message = build_single_user_message(state)
 
@@ -255,70 +396,74 @@ def plan_node(state: AgentState) -> AgentState:
             model="deepseek-v3",
             messages=[{"role": "user", "content": user_message}],   # exactly one
         )
-        print(response)
         raw = response.choices[0].message.content
 
     except Exception as e:
-
-        print(f"[plan] API error: {e} \n Raw:{raw}")
+        print(chalk.red(f"[plan] API error: {e}") + chalk.gray(f" raw={raw!r}"))
         return {"attempts": attempts, "turns": turns,
                 "error": f"api: {e}", "calls": None}
-    # print(f"[plan] raw (truncated): {(raw or '')[:300]!r}")
 
     if _looks_degenerate(raw):
+        print(chalk.yellow("[plan] degenerate response"))
         return {"attempts": attempts, "turns": turns,
                 "raw_response": raw, "error": "degenerate", "calls": None}
 
     try:
         calls = _parse_calls(raw)
     except (json.JSONDecodeError, ValueError) as e:
-        print(f"[plan] parse failed: {e}\n raw:{raw}")
+        print(chalk.red(f"[plan] parse failed: {e}"))
+        print(chalk.gray(f"       raw: {(raw or '')[:200]!r}"))
         return {"attempts": attempts, "turns": turns,
                 "raw_response": raw, "error": f"parse: {e}", "calls": None}
 
     # detect finish_task — it must be terminal
     if any(c.get("tool") == "finish_task" for c in calls):
         if calls[-1].get("tool") != "finish_task":
+            print(chalk.red("[plan] finish_task must be the last call"))
             return {"attempts": attempts, "turns": turns,
                     "raw_response": raw, "calls": None,
                     "error": "finish_task must be the last call"}
-        print("[plan] finish_task called — finished.")
+        print(chalk.green("✔ finish_task called — finished."))
         return {"attempts": 0, "turns": turns, "calls": calls,
                 "raw_response": raw, "error": None, "finished": True}
 
-    print(f"[plan] parsed {len(calls)} call(s).")
+    print(chalk.gray(f"[plan] parsed {len(calls)} call(s)."))
     return {"attempts": 0, "turns": turns, "calls": calls,
             "raw_response": raw, "error": None, "finished": False}
 
 
 def wait_node(state: AgentState) -> AgentState:
-    print(f"[wait] sleeping {RETRY_DELAY_SECONDS}s...")
+    print(chalk.gray(f"⏳ waiting {RETRY_DELAY_SECONDS}s…"))
     time.sleep(RETRY_DELAY_SECONDS)
     return state
 
 
 def execute_node(state: AgentState) -> AgentState:
     calls = state.get("calls") or []
-    print(f"\n[execute] running {len(calls)} call(s)")
+    print("\n" + chalk.bg_magenta.white.bold(f" execute · {len(calls)} call(s) "))
     results: list[dict] = []
     for i, call in enumerate(calls):
         name = call.get("tool")
         args = call.get("args", {}) or {}
-        preview = json.dumps(args)
-        print(f"  [{i+1}] {name}({preview})")
+        print(f"  {chalk.gray(f'[{i+1}/{len(calls)}]')} {_tool(name)} {_dim_json(args)}")
+
         fn = TOOL_EXECUTORS.get(name)
         if fn is None:
             results.append({"tool": name,
                             "result": {"status": "error",
                                        "message": "unknown tool"}})
+            print(f"      {chalk.red('✖')} unknown tool")
             continue
         try:
             res = fn(**args)
         except Exception as e:
             res = {"status": "error", "message": str(e)}
+
         # Trim huge content so the single-message payload stays bounded
         results.append({"tool": name, "args": args, "result": res})
-        print(f"      -> status={res.get('status')}")
+        mark = "✔" if res.get("status") == "ok" else "✖"
+        color = chalk.green if res.get("status") == "ok" else chalk.red
+        print(f"      {color(mark)} {_status(res)}")
 
     history = list(state.get("history", []))
     history.append({"calls": state.get("calls") or [], "results": results})
@@ -327,13 +472,20 @@ def execute_node(state: AgentState) -> AgentState:
 
 
 def done_node(state: AgentState) -> AgentState:
-    print("\n[done]")
+    print("\n" + chalk.green.bold("✔ done"))
     return state
 
 
 def give_up_node(state: AgentState) -> AgentState:
-    print(f"\n[give-up] after {state.get('attempts')} attempt(s) on "
-          f"turn {state.get('turns')}. last error: {state.get('error')}")
+    print(
+        "\n"
+        + chalk.bg_red.white.bold(" give-up ")
+        + " "
+        + chalk.red(
+            f"after {state.get('attempts')} attempt(s) on turn {state.get('turns')}"
+        )
+        + chalk.gray(f" · last error: {state.get('error')}")
+    )
     return state
 
 
@@ -380,15 +532,13 @@ def build_graph() -> Any:
     )
     g.add_edge("done", END)
     g.add_edge("give_up", END)
-    compiled=g.compile()
-    merm= compiled.get_graph().draw_mermaid()
-
-    with open("graph.mmd", "w") as f:
-        f.write(merm)
+    compiled = g.compile()
+    # merm = compiled.get_graph().draw_mermaid()
+    # with open("graph.mmd", "w") as f:
+    #     f.write(merm)
     return compiled
 
 
-# ------------------------------------------------------------------ main
 # ------------------------------------------------------------------ main
 def read_request() -> str:
     """
@@ -409,14 +559,16 @@ def read_request() -> str:
         return data
 
     # Interactive input.
-    print("Enter your request.")
-    print("Finish with a line containing only 'END' "
-          "(or Ctrl+Z+Enter on Windows / Ctrl+D on Unix).\n", flush=True)
+    print(chalk.blue("Enter your request."))
+    print(chalk.gray(
+        "Finish with a line containing only 'END' "
+        "(or Ctrl+Z+Enter on Windows / Ctrl+D on Unix)."
+    ) + "\n")
 
     lines: list[str] = []
     while True:
         try:
-            line = input()
+            line = input(chalk.cyan("> ") if not lines else chalk.gray("… "))
         except EOFError:
             # Ctrl+Z+Enter (Win) or Ctrl+D (Unix) hit
             break
@@ -431,12 +583,14 @@ def read_request() -> str:
 
 
 if __name__ == "__main__":
-
     app = build_graph()
-
     user_request = read_request()
-    print(f"\nWorkdir: {WORKDIR}")
-    print(f"Request: {user_request[:200]}{'...' if len(user_request) > 200 else ''}\n")
+
+    print("\n" + chalk.bg_black.white.bold(" agent ") +
+          chalk.gray(f"  workdir = {WORKDIR}"))
+    preview = user_request[:200] + ("…" if len(user_request) > 200 else "")
+    print(chalk.blue("request: ") + chalk.white(preview))
+    print()
 
     final_state = app.invoke({
         "user_request": user_request,
@@ -446,8 +600,24 @@ if __name__ == "__main__":
         "finished": False,
     })
 
-    print("\n--- Summary ---")
-    print(f"turns used: {final_state.get('turns')}")
+    print("\n" + chalk.bg_black.white.bold(" summary "))
+    print(chalk.blue("turns used: ") + chalk.white(str(final_state.get("turns"))))
+
     last = final_state.get("last_results") or []
-    print(json.dumps(last, indent=2) if last else "(no tool results)")
-    print(f"finished: {final_state.get('finished')}")
+    if last:
+        for r in last:
+            tool = r.get("tool", "?")
+            res  = r.get("result", {})
+            print(
+                f"  {chalk.cyan(tool):<14} "
+                f"{_status(res)} "
+                + chalk.gray(res.get("message", "")[:120])
+            )
+    else:
+        print(chalk.gray("(no tool results)"))
+
+    finished = final_state.get("finished")
+    print(
+        chalk.blue("finished:   ")
+        + (chalk.green("yes") if finished else chalk.red("no"))
+    )

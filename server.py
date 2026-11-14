@@ -3,7 +3,6 @@
 
 '''
 DeepSeek API Server - OpenAI-compatible server for DeepSeek.Programed to respond in only JSON.
-DeepSeek API Server - OpenAI-compatible server for DeepSeek.Programed to respond in only JSON.
 '''
 from dotenv import load_dotenv
 import os
@@ -150,7 +149,7 @@ def chat_completions():
                 "index": 0,
                 "message": {
                     "role": "assistant",
-                    "content": result
+                    "content": (('{' if result[-1] == '}' else '[') + result)
                 },
                 "finish_reason": "stop"
             }],
@@ -160,6 +159,17 @@ def chat_completions():
                 "total_tokens": len(result.split()) if result else 0
             }
         })
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    # Log the traceback to CloudWatch
+    import traceback
+    traceback.print_exc()
+    # Return the exact error to the client so you can see it
+    return jsonify({
+        "error": str(e),
+        "type": type(e).__name__
+    }), 500
 
 @app.route("/v1/models", methods=["GET"])
 def list_models():
@@ -210,3 +220,5 @@ if __name__ == "__main__":
     
     print(f"Starting DeepSeek API Server on {args.host}:{args.port}")
     app.run(host=args.host, port=args.port)
+
+
