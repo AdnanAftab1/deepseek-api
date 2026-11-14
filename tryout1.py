@@ -22,9 +22,6 @@ RETRY_DELAY_SECONDS = 1.0
 MAX_TURNS           = 25
 WORKDIR             = os.path.abspath(os.getcwd())
 
-# Default per-read byte cap; can be overridden per call via max_bytes
-DEFAULT_READ_BYTES  = 20_000
-
 
 # ------------------------------------------------------------------ style helpers
 def _status(res: dict) -> str:
@@ -70,120 +67,21 @@ def list_dir(path: str = ".") -> dict:
     return {"status": "ok", "path": path, "entries": entries}
 
 
-def read_file(
-    path: str,
-    max_bytes: int = DEFAULT_READ_BYTES,
-    start: int = 0,
-    start_line: int | None = None,
-    end_line: int | None = None,
-    offset: int = 0,
-) -> dict:
-    """Read a selected portion of a UTF-8 text file to save token output.
-
-    Args:
-        path:        relative file path.
-        max_bytes:   hard cap on the number of bytes read for this slice.
-        start:       byte offset to begin reading from (default 0).
-        start_line:  1-based first line to include (inclusive). If given,
-                     overrides ``start`` (byte offset).
-        end_line:    1-based last line to include (inclusive). If given
-                     together with ``start_line``, restricts the slice to
-                     that line range.
-        offset:      number of lines to skip before starting (alternative
-                     0-based line offset when start_line isn't used).
-
-    Returns a dict with:
-        status, path, bytes_read, start_byte, end_byte, total_bytes,
-        truncated (True if bytes remain after this slice),
-        start_line, end_line (actual 1-based line numbers of the slice),
-        total_lines (if computed), content, next_start (byte offset to
-        continue reading, or None if EOF).
-    """
+def read_file(path: str, max_bytes: int = 20_000) -> dict:
     full = _safe_path(path)
     if not os.path.isfile(full):
         return {"status": "error", "message": f"Not a file: {path}"}
-
-    total_bytes = os.path.getsize(full)
-
-    # --- line-based selection -------------------------------------------
-    if start_line is not None or end_line is not None or offset:
-        try:
-            with open(full, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-        except UnicodeDecodeError:
-            return {"status": "error",
-                    "message": "Binary file; not readable as UTF-8"}
-        total_lines = len(lines)
-
-        first = (start_line - 1) if start_line is not None else offset
-        if first < 0:
-            first = 0
-        last = end_line if end_line is not None else total_lines
-        if last > total_lines:
-            last = total_lines
-        if last < first:
-            last = first
-
-        selected = lines[first:last]
-        text = "".join(selected)
-        raw = text.encode("utf-8")
-
-        # Enforce byte cap
-        truncated = False
-        if len(raw) > max_bytes:
-            raw = raw[:max_bytes]
-            # avoid cutting a multibyte char
-            text = raw.decode("utf-8", errors="ignore")
-            truncated = True
-
-        bytes_read = len(text.encode("utf-8"))
-        return {
-            "status": "ok",
-            "path": path,
-            "bytes_read": bytes_read,
-            "total_bytes": total_bytes,
-            "start_byte": 0,
-            "end_byte": bytes_read,
-            "start_line": first + 1 if total_lines else 0,
-            "end_line": first + text.count("\n") + (0 if text.endswith("\n") else 1),
-            "total_lines": total_lines,
-            "truncated": truncated or (last < total_lines),
-            "next_start": None if (last >= total_lines and not truncated) else None,
-            "content": text,
-        }
-
-    # --- byte-based selection -------------------------------------------
-    if start < 0:
-        start = 0
-    if start > total_bytes:
-        start = total_bytes
-
     with open(full, "rb") as f:
-        f.seek(start)
         data = f.read(max_bytes)
-
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
-        # trim trailing partial multibyte char
-        text = data.decode("utf-8", errors="ignore")
-
-    bytes_read = len(data)
-    end_byte = start + bytes_read
-    more = end_byte < total_bytes
-
+        return {"status": "error", "message": "Binary file; not readable as UTF-8"}
     return {
         "status": "ok",
         "path": path,
-        "bytes_read": bytes_read,
-        "total_bytes": total_bytes,
-        "start_byte": start,
-        "end_byte": end_byte,
-        "total_lines": None,
-        "start_line": None,
-        "end_line": None,
-        "truncated": more,
-        "next_start": end_byte if more else None,
+        "bytes_read": len(data),
+        "truncated": os.path.getsize(full) > len(data),
         "content": text,
     }
 
@@ -248,18 +146,9 @@ Available tools:
    Lists a directory. Use this FIRST to discover the folder layout.
 
 2. read_file
-   args: {
-     "path":       "<string>",
-     "max_bytes"?: <int>,     # cap on bytes returned for this slice (default 20000)
-     "start"?:     <int>,     # byte offset to start from (default 0)
-     "start_line"?: <int>,    # 1-based first line (inclusive); overrides start
-     "end_line"?:   <int>,    # 1-based last line (inclusive); used with start_line
-     "offset"?:    <int>      # 0-based number of lines to skip (alt. to start_line)
-   }
-   Reads a SELECTED PORTION of a UTF-8 text file to save token output.
-   Prefer using start_line/end_line (or offset) when you only need part of
-   a file. Response includes total_bytes, truncated, next_start and
-   (for line-based reads) total_lines so you can page through large files.
+   args: { "path": "<string>", "max_bytes"?: <int> }
+   Reads a UTF-8 text file. Use before writing/deciding anything that depends
+   on existing content.
 
 3. create_folder
    args: { "path": "<string>" }
@@ -282,8 +171,6 @@ Available tools:
 RULES
 - All paths are relative to the working directory and may not escape it.
 - Prefer discovering state (list_dir / read_file) before mutating.
-- To save tokens, read only the portion of a file you actually need
-  (use start_line/end_line or max_bytes), rather than whole large files.
 - Reply with ONLY a JSON array of { "tool": ..., "args": { ... } }.
 - Do NOT reply with [] to finish. You MUST call finish_task to finish.
 - finish_task must be the LAST call in the array; do not batch it with other
