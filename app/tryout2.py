@@ -51,7 +51,12 @@ Available tools:
    args: { "src_dir": "<string>", "zip_path": "<string>" }
    Recursively zips everything under src_dir into a single .zip file.
 
-8. finish_task
+8. comment
+   args: { "text": "<string>" }
+   Prints a free-form comment authored by you to the terminal in color.
+   Use it to explain your reasoning or findings to the user.
+
+9. finish_task
    args: { "summary"?: "<string>" }
    Call this WHEN AND ONLY WHEN the current (sub)task is fully satisfied.
    Inside a subtask this finishes ONLY that subtask and returns its summary
@@ -61,7 +66,7 @@ Available tools:
 """
 
 SUBTASK_TOOL_SPEC = """
-9. spawn_task   <-- NEST A SUBTASK (isolated context, saves input tokens)
+10. spawn_task   <-- NEST A SUBTASK (isolated context, saves input tokens)
    args: { "task": "<string>", "context"?: "<string>" }
    Runs a self-contained sub-agent to accomplish `task`. The sub-agent gets
    ONLY the `task` text plus an optional `context` string you supply — it

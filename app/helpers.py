@@ -169,6 +169,15 @@ def zip_folder(src_dir: str, zip_path: str) -> dict:
     return {"status": "ok", "zip": zip_path, "files_included": count}
 
 
+def comment(text: str = "") -> dict:
+    """Print a model-authored comment to the terminal in color."""
+    s = str(text)
+    if not s.strip():
+        return {"status": "error", "message": "comment requires non-empty `text`"}
+    print("\n" + chalk.bg_cyan.black.bold(" comment ") + " " + chalk.cyan(s))
+    return {"status": "ok", "message": "comment printed", "comment": s}
+
+
 def finish_task(summary: str = "") -> dict:
     return {"status": "ok", "message": "task complete", "summary": summary}
 
@@ -181,5 +190,6 @@ TOOL_EXECUTORS = {
     "edit_file":     edit_file,
     "append_file":   append_file,
     "zip_folder":    zip_folder,
+    "comment":       comment,
     "finish_task":   finish_task,
 }

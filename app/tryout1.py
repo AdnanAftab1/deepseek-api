@@ -48,7 +48,12 @@ Available tools:
    args: { "src_dir": "<string>", "zip_path": "<string>" }
    Recursively zips everything under src_dir into a single .zip file.
 
-8. finish_task
+8. comment
+   args: { "text": "<string>" }
+   Prints a free-form comment authored by you to the terminal in color.
+   Use it to explain your reasoning or findings to the user.
+
+9. finish_task
    args: { "summary"?: "<string>" }
    Call this WHEN AND ONLY WHEN the user's request has been fully satisfied.
    This is the ONLY way to end the task. Never emit an empty array [] as a
