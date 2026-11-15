@@ -68,6 +68,7 @@ RULES
   rewriting whole files. Keep `old`/`new` snippets as small as possible while
   still being unique in the file.
 - Reply with ONLY a JSON array of { "tool": ..., "args": { ... } }.
+- Do not type any unneccesay non-computation friendly text. If neccessay just use the comment tool . 
 - Do NOT reply with [] to finish. You MUST call finish_task to finish.
 - finish_task must be the LAST call in the array; do not batch it with other
   mutating calls whose results you haven't seen yet.

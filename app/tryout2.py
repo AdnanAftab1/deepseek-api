@@ -89,6 +89,7 @@ RULES
   description and only the minimal context it needs. Its history stays
   isolated, so the parent context stays small.
 - Reply with ONLY a JSON array of { "tool": ..., "args": { ... } }.
+-Do not type any unneccesay non-computation friendly text. If neccessay just use the comment tool . 
 - Do NOT reply with [] to finish. You MUST call finish_task to finish.
 - finish_task must be the LAST call in the array; do not batch it with other
   mutating calls whose results you haven't seen yet.

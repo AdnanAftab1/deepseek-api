@@ -333,15 +333,9 @@ def build_graph(build_message: BuildMessage, dispatch: Dispatch,
 
 
 # ------------------------------------------------------------------ I/O
-DEFAULT_PROMPT = """You are an autonomous coding agent working inside the current working directory.
-
-Your goal: make sure the code in this project works and is tidy. Concretely:
-  1. List the working directory and read the relevant files first.
-  2. Find obvious bugs, broken imports, syntax errors, and unfinished TODOs.
-  3. Fix them with targeted edits (prefer edit_file over write_file).
-  4. When everything looks good, call finish_task with a short summary.
-
-Do not ask questions; make reasonable assumptions and proceed."""
+DEFAULT_PROMPT = """
+    Read the file prompt.txt to know the request.
+"""
 
 
 def read_request() -> str:
@@ -354,7 +348,7 @@ def read_request() -> str:
     print(chalk.blue("Enter your request."))
     print(chalk.gray("Finish with a line containing only 'END' "
                      "(or Ctrl+Z+Enter on Windows / Ctrl+D on Unix)."))
-    print(chalk.gray("Type '1' on its own line to use the built-in default prompt.") + "\n")
+    print(chalk.gray("Type '1' on its own line to use the prompt from prompt.txt.") + "\n")
 
     lines: list[str] = []
     while True:
@@ -365,8 +359,15 @@ def read_request() -> str:
         if line.strip().upper() == "END":
             break
         if not lines and line.strip() == "1":
-            print(chalk.magenta("[using default prompt]"))
-            return DEFAULT_PROMPT
+            try:
+                with open("prompt.txt", "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+            except OSError as e:
+                raise SystemExit(f"Could not read prompt.txt: {e}")
+            if not content:
+                raise SystemExit("prompt.txt is empty; aborting.")
+            print(chalk.magenta("[using prompt from prompt.txt]"))
+            return content
         lines.append(line)
 
     data = "\n".join(lines).strip()
