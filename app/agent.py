@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 from typing import Any, Callable, TypedDict
@@ -23,7 +24,16 @@ BuildMessage = Callable[["AgentState"], str]
 
 
 # ------------------------------------------------------------------ parsing
+# Matches both ```json ... ``` and bare ``` ... ``` fences. Non-greedy so
+# adjacent blocks are captured separately. DOTALL so the body can span lines.
+_FENCE_RE = re.compile(
+    r"```(?:[ \t]*json[ \t]*)?\r?\n(.*?)\r?\n[ \t]*```",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
 def _strip_fences(text: str) -> str:
+    """Strip a single outer ```...``` block if the WHOLE response is one."""
     clean = text.strip()
     if clean.startswith("```"):
         clean = clean.split("\n", 1)[1] if "\n" in clean else clean[3:]
@@ -37,21 +47,116 @@ def _looks_degenerate(text: str | None) -> bool:
     if not text:
         return True
     s = text.strip()
-    return len(s) <= 1 or (not s.startswith("[") and not s.startswith("{"))
+    if len(s) <= 1:
+        return True
+    # Accept anything that *could* contain a JSON payload: it starts with [ / {
+    # or it contains a fenced block we can dig into.
+    if s.startswith("[") or s.startswith("{") or "```" in s:
+        return False
+    return True
 
 
-def _parse_calls(raw: str) -> list[dict]:
-    data = json.loads(_strip_fences(raw))
+def _normalize_calls(data: Any) -> list[dict]:
+    """Validate/normalize a decoded JSON payload into a list of tool calls."""
     if isinstance(data, dict) and "calls" in data:
         data = data["calls"]
     if not isinstance(data, list):
-        raise ValueError("Model did not return a JSON array of tool calls.")
+        raise ValueError("Payload is not a JSON array of tool calls.")
     if data == []:
-        raise ValueError("Empty array is not valid; call finish_task when done.")
+        raise ValueError(
+            "Empty array is not a valid response. "
+            "Call finish_task when done, otherwise emit tool calls."
+        )
     for el in data:
         if not isinstance(el, dict) or "tool" not in el:
-            raise ValueError(f"Malformed tool call: {el!r}")
+            raise ValueError(f"Malformed tool call element: {el!r}")
     return data
+
+
+def _try_decode(text: str) -> tuple[list[dict] | None, str | None]:
+    """Try to decode `text` as a tool-call payload.
+
+    Returns (calls, None) on success, or (None, error_message) on failure.
+    Never raises.
+    """
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, TypeError) as e:
+        return None, f"json: {e}"
+    try:
+        return _normalize_calls(data), None
+    except ValueError as e:
+        return None, str(e)
+
+
+def _extract_fenced_json(raw: str) -> list[dict]:
+    """Fallback: find ```json ... ``` (or bare ``` ... ```) blocks in `raw`,
+    decode each, and require EXACTLY ONE to be a valid tool-call payload.
+
+    Used when `raw` itself fails to JSONify (e.g. it is a single string that
+    embeds a fenced JSON segment). Raises ValueError if zero or >1 valid
+    payloads are found.
+    """
+    blocks = _FENCE_RE.findall(raw)
+    if not blocks:
+        raise ValueError("No fenced ```json block found to fall back to.")
+
+    successes: list[list[dict]] = []
+    failures: list[str] = []
+    for idx, body in enumerate(blocks, 1):
+        body_calls, body_err = _try_decode(body.strip())
+        if body_calls is not None:
+            successes.append(body_calls)
+        else:
+            failures.append(f"block {idx}: {body_err}")
+
+    if len(successes) == 1:
+        return successes[0]
+    if len(successes) > 1:
+        raise ValueError(
+            f"Ambiguous response: found {len(successes)} valid JSON tool-call "
+            f"payloads in fenced blocks; expected exactly 1. "
+            f"Failures: {failures}"
+        )
+    raise ValueError(
+        f"No valid JSON tool-call payload found in {len(blocks)} fenced block(s). "
+        f"Failures: {failures}"
+    )
+
+
+def _parse_calls(raw: str) -> list[dict]:
+    """Parse a model reply into a validated list of tool calls.
+
+    Order of attempts:
+      1. Whole reply, after stripping a single outer fence (fast path).
+      2. If that fails to JSONify, scan every ```json / ``` fence found
+         anywhere in the reply (e.g. raw is a single string embedding a
+         fenced JSON segment). More than one valid payload is an error.
+
+    Contract:
+      - exactly one payload must parse and validate;
+      - zero → ValueError describing all failures;
+      - more than one → ValueError (ambiguous; we refuse to guess).
+    """
+    if not raw or not raw.strip():
+        raise ValueError("Empty model response.")
+
+    # --- Path 1: whole-reply fast path ----------------------------------
+    whole = _strip_fences(raw)
+    calls, err = _try_decode(whole)
+    if calls is not None:
+        return calls
+
+    # --- Path 2: raw failed to JSONify — look for embedded fenced JSON --
+    # If `raw` is a single string that embeds ```json ...``` segment(s), pull
+    # them out. Exactly one valid payload is required; more than one is
+    # ambiguous and rejected.
+    try:
+        return _extract_fenced_json(raw)
+    except ValueError as fence_err:
+        raise ValueError(
+            f"{err or 'Could not parse response as JSON.'} | {fence_err}"
+        )
 
 
 # ------------------------------------------------------------------ state
