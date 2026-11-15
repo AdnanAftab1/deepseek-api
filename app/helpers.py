@@ -64,7 +64,7 @@ def list_dir(path: str = ".") -> dict:
     return {"status": "ok", "path": path, "entries": entries}
 
 
-def read_file(path: str, max_bytes: int | None = None, offset: int = 0, limit: int | None = None) -> dict:
+def read_file(path: str) -> dict:
     full = _safe_path(path)
     if not os.path.isfile(full):
         return {"status": "error", "message": f"Not a file: {path}"}
@@ -78,26 +78,13 @@ def read_file(path: str, max_bytes: int | None = None, offset: int = 0, limit: i
     total_bytes = len(data)
     total_lines = text.count("\n") + (0 if text.endswith("\n") or text == "" else 1)
 
-    lines = text.splitlines(keepends=True)
-    start = max(0, offset)
-    end = len(lines) if limit is None else max(start, start + limit)
-    window = "".join(lines[start:end])
-
-    enc = window.encode("utf-8")
-    byte_truncated = False
-    if max_bytes is not None and len(enc) > max_bytes:
-        window = enc[:max_bytes].decode("utf-8", errors="ignore")
-        byte_truncated = True
-
     return {
         "status": "ok",
         "path": path,
-        "bytes_read": len(window.encode("utf-8")),
+        "bytes_read": total_bytes,
         "total_bytes": total_bytes,
         "total_lines": total_lines,
-        "offset": start,
-        "truncated": byte_truncated or end < len(lines),
-        "content": window,
+        "content": text,
     }
 
 

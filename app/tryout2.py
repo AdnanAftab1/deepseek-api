@@ -23,11 +23,9 @@ Available tools:
    Lists a directory. Use this FIRST to discover the folder layout.
 
 2. read_file
-   args: { "path": "<string>", "offset"?: <int>, "limit"?: <int>, "max_bytes"?: <int> }
-   Reads a UTF-8 text file. By default returns the ENTIRE file content (no
-   truncation). `offset`/`limit` select a line window (0-based) if you only
-   need a region; `max_bytes` is an OPTIONAL explicit cap — omit it to get the
-   whole file. Reads before writing/deciding.
+   args: { "path": "<string>" }
+   Reads a UTF-8 text file and always returns the ENTIRE file content.
+   Reads before writing/deciding.
 
 3. create_folder
    args: { "path": "<string>" }
